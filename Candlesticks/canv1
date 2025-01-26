@@ -1,0 +1,192 @@
+#property copyright "Copyright 2025, Your Name"
+#property link      "https://www.yourwebsite.com"
+#property version   "1.00"
+#property strict
+
+#include <Trade\Trade.mqh>
+
+input double LotSize = 0.01;        // Lot size for trading
+input int ATRPeriod = 14;           // ATR period
+input double ATRMultiplier = 1.0;   // ATR multiplier for SL
+input double RiskRewardRatio = 2.0; // Risk to Reward ratio for TP
+
+CTrade trade;
+int atrHandle;
+int totalTrades = 0;
+int consecutiveLosses = 0;
+datetime lastTradeTime = 0;
+datetime pauseUntil = 0;
+
+// For GUI
+string guiPrefix = "ScalpingEA_";
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    atrHandle = iATR(_Symbol, PERIOD_CURRENT, ATRPeriod);
+    if(atrHandle == INVALID_HANDLE) {
+        Print("Error creating ATR indicator");
+        return INIT_FAILED;
+    }
+    
+    CreateGUI();
+    
+    return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    ObjectsDeleteAll(0, guiPrefix);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    if(TimeCurrent() < pauseUntil) return;
+    
+    UpdateGUI();
+    
+    if(!IsNewBar()) return;
+    
+    double atr[];
+    CopyBuffer(atrHandle, 0, 1, 1, atr);
+    if(ArraySize(atr) == 0) return;
+    
+    MqlRates rates[];
+    if(CopyRates(_Symbol, PERIOD_CURRENT, 1, 2, rates) != 2) return;
+    
+    bool isBullish = rates[1].close > rates[1].open;
+    bool isBearish = rates[1].close < rates[1].open;
+    
+    if(isBullish)
+    {
+        double sl = NormalizeDouble(rates[0].open - atr[0] * ATRMultiplier, _Digits);
+        double tp = NormalizeDouble(rates[0].open + atr[0] * ATRMultiplier * RiskRewardRatio, _Digits);
+        if(trade.Buy(LotSize, _Symbol, 0, sl, tp))
+        {
+            totalTrades++;
+            lastTradeTime = TimeCurrent();
+        }
+    }
+    else if(isBearish)
+    {
+        double sl = NormalizeDouble(rates[0].open + atr[0] * ATRMultiplier, _Digits);
+        double tp = NormalizeDouble(rates[0].open - atr[0] * ATRMultiplier * RiskRewardRatio, _Digits);
+        if(trade.Sell(LotSize, _Symbol, 0, sl, tp))
+        {
+            totalTrades++;
+            lastTradeTime = TimeCurrent();
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check for new bar                                                |
+//+------------------------------------------------------------------+
+bool IsNewBar()
+{
+    static datetime lastBar = 0;
+    datetime currentBar = iTime(_Symbol, PERIOD_CURRENT, 0);
+    if(lastBar != currentBar)
+    {
+        lastBar = currentBar;
+        return true;
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Create GUI                                                       |
+//+------------------------------------------------------------------+
+void CreateGUI()
+{
+    int x = 20;
+    int y = 20;
+    int width = 150;
+    int height = 20;
+    
+    CreateLabel("TotalTrades", "Total Trades: 0", x, y);
+    y += height;
+    CreateLabel("NextCandle", "Next Candle: 00:00", x, y);
+    y += height;
+    CreateLabel("ExecutedTrades", "Executed Trades: 0", x, y);
+    y += height;
+    CreateLabel("TotalProfit", "Total Profit: 0.00", x, y);
+    y += height;
+    CreateLabel("TotalLoss", "Total Loss: 0.00", x, y);
+    y += height;
+    CreateLabel("CurrentSpread", "Spread: 0", x, y);
+    y += height;
+    CreateLabel("LotSize", "Lot Size: " + DoubleToString(LotSize, 2), x, y);
+    y += height;
+    CreateLabel("Margin", "Margin: 0.00", x, y);
+}
+
+//+------------------------------------------------------------------+
+//| Create label                                                     |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, string text, int x, int y)
+{
+    ObjectCreate(0, guiPrefix + name, OBJ_LABEL, 0, 0, 0);
+    ObjectSetString(0, guiPrefix + name, OBJPROP_TEXT, text);
+    ObjectSetInteger(0, guiPrefix + name, OBJPROP_XDISTANCE, x);
+    ObjectSetInteger(0, guiPrefix + name, OBJPROP_YDISTANCE, y);
+}
+
+//+------------------------------------------------------------------+
+//| Update GUI                                                       |
+//+------------------------------------------------------------------+
+void UpdateGUI()
+{
+    ObjectSetString(0, guiPrefix + "TotalTrades", OBJPROP_TEXT, "Total Trades: " + IntegerToString(totalTrades));
+    ObjectSetString(0, guiPrefix + "NextCandle", OBJPROP_TEXT, "Next Candle: " + TimeToString(iTime(_Symbol, PERIOD_CURRENT, 0) + PeriodSeconds(), TIME_SECONDS));
+    ObjectSetString(0, guiPrefix + "ExecutedTrades", OBJPROP_TEXT, "Executed Trades: " + IntegerToString(PositionsTotal()));
+    ObjectSetString(0, guiPrefix + "TotalProfit", OBJPROP_TEXT, "Total Profit: " + DoubleToString(AccountInfoDouble(ACCOUNT_PROFIT), 2));
+    ObjectSetString(0, guiPrefix + "TotalLoss", OBJPROP_TEXT, "Total Loss: " + DoubleToString(MathAbs(AccountInfoDouble(ACCOUNT_PROFIT) < 0 ? AccountInfoDouble(ACCOUNT_PROFIT) : 0), 2));
+    ObjectSetString(0, guiPrefix + "CurrentSpread", OBJPROP_TEXT, "Spread: " + IntegerToString(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD)));
+    ObjectSetString(0, guiPrefix + "Margin", OBJPROP_TEXT, "Margin: " + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN), 2));
+}
+
+//+------------------------------------------------------------------+
+//| Trade event handler                                              |
+//+------------------------------------------------------------------+
+void OnTrade()
+{
+    if(HistorySelect(lastTradeTime, TimeCurrent()))
+    {
+        for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+        {
+            ulong ticket = HistoryDealGetTicket(i);
+            if(ticket == 0) continue;
+            
+            ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+            ENUM_DEAL_REASON dealReason = (ENUM_DEAL_REASON)HistoryDealGetInteger(ticket, DEAL_REASON);
+            
+            if(dealEntry == DEAL_ENTRY_OUT && (dealReason == DEAL_REASON_SL || dealReason == DEAL_REASON_TP))
+            {
+                if(HistoryDealGetDouble(ticket, DEAL_PROFIT) < 0)
+                {
+                    consecutiveLosses++;
+                    if(consecutiveLosses >= 2)
+                    {
+                        pauseUntil = TimeCurrent() + 600; // Pause for 10 minutes
+                        Print("Two consecutive losses. Pausing trading for 10 minutes.");
+                        consecutiveLosses = 0;
+                    }
+                }
+                else
+                {
+                    consecutiveLosses = 0;
+                }
+                break;
+            }
+        }
+    }
+}
